@@ -1,0 +1,421 @@
+<script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+    import { getFirestore, collection, addDoc, getDocs, deleteDoc, doc, query, orderBy } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+    import { getAnalytics } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-analytics.js";
+
+    // Tu configuración de Firebase
+    const firebaseConfig = {
+        apiKey: "AIzaSyAhLCnhNXflXFzDcuGtVyw1KnyC9KE4Sv8",
+        authDomain: "las-fresonas.firebaseapp.com",
+        projectId: "las-fresonas",
+        storageBucket: "las-fresonas.firebasestorage.app",
+        messagingSenderId: "1004316976811",
+        appId: "1:1004316976811:web:e819f402b49085b1e539ee",
+        measurementId: "G-9PKT3R842E"
+    };
+
+    let app;
+    let db;
+    let analytics;
+    let historyUnlocked = false;
+
+    // Referencias a elementos del DOM
+    const productTypeSelect = document.getElementById('product-type');
+    const complementSelect = document.getElementById('complement');
+    const toppingSelect = document.getElementById('topping');
+    const whippedCreamCheckbox = document.getElementById('whipped-cream');
+    const addToCartBtn = document.getElementById('add-to-cart');
+    const cartList = document.getElementById('cart-list');
+    const cartCount = document.getElementById('cart-count');
+    const cartTotal = document.getElementById('cart-total');
+    const clearCartBtn = document.getElementById('clear-cart');
+    const continueToConfirmBtn = document.getElementById('continue-to-confirm');
+    const orderSummary = document.getElementById('order-summary');
+    const confirmOrderBtn = document.getElementById('confirm-order');
+    const confirmationMessage = document.getElementById('confirmation-message');
+    const newOrderBtn = document.getElementById('new-order');
+    const historyList = document.getElementById('history-list');
+    const downloadCsvBtn = document.getElementById('download-csv');
+    const tabs = document.querySelectorAll('.tab');
+    const tabContents = document.querySelectorAll('.tab-content');
+    const notesTextArea = document.getElementById('notes');
+
+    let cart = [];
+    const HISTORY_PIN = '9312230620';
+
+    // Función principal asíncrona para inicializar la app y los oyentes de eventos
+    async function main() {
+        try {
+            app = initializeApp(firebaseConfig);
+            db = getFirestore(app);
+            analytics = getAnalytics(app);
+            console.log("Firebase initialized successfully!");
+
+            addEventListeners();
+
+        } catch (error) {
+            console.error("Error initializing Firebase:", error);
+            alert("Hubo un error al inicializar la aplicación. Por favor, revisa la consola para más detalles.");
+        }
+    }
+
+    // Llama a la función principal
+    main();
+
+    function addEventListeners() {
+        tabs.forEach(tab => {
+            tab.addEventListener('click', async () => {
+                const tabId = tab.getAttribute('data-tab');
+                if (tabId === 'history' && !historyUnlocked) {
+                    const userPin = prompt('Por favor, ingresa el PIN para ver el historial:');
+                    if (userPin !== HISTORY_PIN) {
+                        alert('PIN incorrecto. No puedes acceder al historial.');
+                        return;
+                    }
+                    historyUnlocked = true;
+                    await loadHistory();
+                }
+
+                tabs.forEach(t => t.classList.remove('active'));
+                tabContents.forEach(tc => tc.classList.remove('active'));
+                tab.classList.add('active');
+                document.getElementById(`${tabId}-tab`).classList.add('active');
+                
+                if (tabId === 'confirm') {
+                    updateOrderSummary();
+                }
+            });
+        });
+
+        addToCartBtn.addEventListener('click', function() {
+            const productType = productTypeSelect.value;
+            const complement = complementSelect.value;
+            const topping = toppingSelect.value;
+            const whippedCream = whippedCreamCheckbox.checked;
+
+            if (!productType) {
+                alert('Por favor selecciona un tipo de fresas con crema.');
+                return;
+            }
+
+            const product = {
+                id: Date.now(),
+                type: productType,
+                complement: complement,
+                topping: topping,
+                whippedCream: whippedCream
+            };
+
+            cart.push(product);
+            updateCartDisplay();
+            
+            productTypeSelect.value = '';
+            complementSelect.value = 'nada';
+            toppingSelect.value = 'nada';
+            whippedCreamCheckbox.checked = false;
+        });
+
+        clearCartBtn.addEventListener('click', function() {
+            if (confirm('¿Estás seguro de que quieres vaciar el carrito?')) {
+                cart = [];
+                updateCartDisplay();
+            }
+        });
+
+        continueToConfirmBtn.addEventListener('click', function() {
+            if (cart.length === 0) {
+                alert('El carrito está vacío. Agrega al menos un producto.');
+                return;
+            }
+            document.querySelector('[data-tab="confirm"]').click();
+        });
+
+        confirmOrderBtn.addEventListener('click', async function() {
+            if (cart.length === 0) {
+                alert('El carrito está vacío. Agrega al menos un producto.');
+                return;
+            }
+
+            const notes = notesTextArea.value;
+            const historyCollection = collection(db, "orderHistory");
+            const metaCollection = collection(db, "meta");
+
+            try {
+                const metaQuery = query(metaCollection, orderBy("lastFolio", "desc"));
+                const metaDocs = await getDocs(metaQuery);
+                let lastFolio = 0;
+                if (!metaDocs.empty) {
+                    lastFolio = metaDocs.docs[0].data().lastFolio;
+                }
+                const newFolio = `LF${String(lastFolio + 1).padStart(4, '0')}`;
+                
+                await addDoc(metaCollection, { lastFolio: lastFolio + 1 });
+                
+                const now = new Date();
+                const dateTime = now.toLocaleString('es-MX', { dateStyle: 'short', timeStyle: 'short' });
+
+                for (const product of cart) {
+                    await addDoc(historyCollection, {
+                        folio: newFolio,
+                        date: dateTime,
+                        productType: product.type,
+                        complement: product.complement,
+                        topping: product.topping,
+                        whippedCream: product.whippedCream,
+                        quantity: 1,
+                        notes: notes
+                    });
+                }
+
+                confirmationMessage.style.display = 'block';
+                confirmOrderBtn.style.display = 'none';
+
+                cart = [];
+                updateCartDisplay();
+                updateOrderSummary();
+                notesTextArea.value = '';
+
+            } catch (error) {
+                console.error("Error confirming order:", error);
+                alert("Hubo un error al confirmar el pedido. Intenta de nuevo.");
+            }
+        });
+
+        newOrderBtn.addEventListener('click', function() {
+            cart = [];
+            notesTextArea.value = '';
+            confirmationMessage.style.display = 'none';
+            confirmOrderBtn.style.display = 'block';
+            updateCartDisplay();
+            updateOrderSummary();
+            document.querySelector('[data-tab="order"]').click();
+        });
+
+        downloadCsvBtn.addEventListener('click', async function() {
+            if (!historyUnlocked) {
+                alert('Necesitas ingresar el PIN para descargar el historial.');
+                return;
+            }
+            
+            const historyQuery = query(collection(db, "orderHistory"), orderBy("date", "desc"));
+            const historyDocs = await getDocs(historyQuery);
+            const history = historyDocs.docs.map(doc => doc.data());
+
+            if (history.length === 0) {
+                alert('No hay historial de ventas para descargar.');
+                return;
+            }
+
+            let csvContent = "data:text/csv;charset=utf-8,";
+            csvContent += "Folio,Fecha-Hora,Producto,Complemento,Topping,Crema Batida,Cantidad Vendida,Notas\n";
+
+            history.forEach(item => {
+                const row = [
+                    `"${item.folio}"`,
+                    `"${item.date}"`,
+                    `"${getTypeName(item.productType)}"`,
+                    `"${getComplementName(item.complement)}"`,
+                    `"${getToppingName(item.topping)}"`,
+                    `"${item.whippedCream ? 'Sí' : 'No'}"`,
+                    item.quantity,
+                    `"${item.notes || 'N/A'}"`
+                ];
+                csvContent += row.join(",") + "\n";
+            });
+
+            const encodedUri = encodeURI(csvContent);
+            const link = document.createElement("a");
+            link.setAttribute("href", encodedUri);
+            const now = new Date();
+            const dateString = now.toISOString().split('T')[0];
+            link.setAttribute("download", `reporte_ventas_${dateString}.csv`);
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        });
+
+        cartList.addEventListener('click', function(e) {
+            const deleteBtn = e.target.closest('.delete-btn');
+            if (deleteBtn) {
+                const productIndex = parseInt(deleteBtn.getAttribute('data-index'));
+                cart.splice(productIndex, 1);
+                updateCartDisplay();
+            }
+        });
+
+        historyList.addEventListener('click', async function(e) {
+            const btn = e.target.closest('.delete-btn');
+            if (btn) {
+                const itemId = btn.getAttribute('data-id');
+                const userPin = prompt('Por favor, ingresa el PIN para eliminar este pedido:');
+                if (userPin === HISTORY_PIN) {
+                    try {
+                        await deleteDoc(doc(db, "orderHistory", itemId));
+                        await loadHistory();
+                        alert('El pedido ha sido eliminado correctamente.');
+                    } catch (error) {
+                        console.error("Error deleting document:", error);
+                        alert("Hubo un error al eliminar el pedido. Intenta de nuevo.");
+                    }
+                } else {
+                    alert('PIN incorrecto. No se puede eliminar el pedido.');
+                }
+            }
+        });
+    }
+
+    function updateCartDisplay() {
+        cartList.innerHTML = '';
+        if (cart.length === 0) {
+            cartList.innerHTML = '<li class="order-item empty-order">No hay productos en el carrito. ¡Agrega tu primer pedido!</li>';
+        } else {
+            cart.forEach((product, index) => {
+                const listItem = document.createElement('li');
+                listItem.className = 'order-item';
+                const typeName = getTypeName(product.type);
+                const complementName = product.complement !== 'nada' ? getComplementName(product.complement) : '';
+                const toppingName = product.topping !== 'nada' ? getToppingName(product.topping) : '';
+                listItem.innerHTML = `
+                    <button class="delete-btn" data-index="${index}"><i class="fas fa-times"></i></button>
+                    <div class="order-header">${typeName}</div>
+                    <div class="order-details">
+                        ${complementName ? `Complemento: ${complementName}<br>` : ''}
+                        ${toppingName ? `Topping: ${toppingName}<br>` : ''}
+                        ${product.whippedCream ? 'Con Crema Batida' : 'Sin Crema Batida'}
+                    </div>
+                `;
+                cartList.appendChild(listItem);
+            });
+        }
+        cartCount.textContent = cart.length;
+        cartTotal.textContent = cart.length;
+    }
+
+    function updateOrderSummary() {
+        orderSummary.innerHTML = '';
+        if (cart.length === 0) {
+            orderSummary.innerHTML = '<div class="empty-order">No hay productos para confirmar</div>';
+            return;
+        }
+        const summaryList = document.createElement('div');
+        cart.forEach((product, index) => {
+            const typeName = getTypeName(product.type);
+            const complementName = product.complement !== 'nada' ? getComplementName(product.complement) : '';
+            const toppingName = product.topping !== 'nada' ? getToppingName(product.topping) : '';
+            const itemDiv = document.createElement('div');
+            itemDiv.className = 'summary-item';
+            itemDiv.innerHTML = `
+                <div>${index + 1}. ${typeName}</div>
+                <div>
+                    ${complementName ? `+ ${complementName}` : ''}
+                    ${toppingName ? `+ ${toppingName}` : ''}
+                    ${product.whippedCream ? '+ Crema Batida' : ''}
+                </div>
+            `;
+            summaryList.appendChild(itemDiv);
+        });
+        const totalDiv = document.createElement('div');
+        totalDiv.className = 'summary-total';
+        totalDiv.innerHTML = `<div>Total de productos: ${cart.length}</div>`;
+        orderSummary.appendChild(summaryList);
+        orderSummary.appendChild(totalDiv);
+    }
+
+    async function loadHistory() {
+        if (!db) {
+            console.error("Firestore is not initialized.");
+            return;
+        }
+        historyList.innerHTML = '';
+        try {
+            const historyQuery = query(collection(db, "orderHistory"), orderBy("date", "desc"));
+            const historyDocs = await getDocs(historyQuery);
+            const history = historyDocs.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+
+            if (history.length === 0) {
+                historyList.innerHTML = '<div class="empty-order">No hay pedidos registrados en el historial.</div>';
+                downloadCsvBtn.style.display = 'none';
+            } else {
+                const groupedHistory = history.reduce((acc, item) => {
+                    const { folio } = item;
+                    if (!acc[folio]) {
+                        acc[folio] = {
+                            folio,
+                            date: item.date,
+                            items: []
+                        };
+                    }
+                    acc[folio].items.push(item);
+                    return acc;
+                }, {});
+
+                const sortedGroups = Object.values(groupedHistory).sort((a, b) => {
+                    const folioA = parseInt(a.folio.replace('LF', ''));
+                    const folioB = parseInt(b.folio.replace('LF', ''));
+                    return folioB - folioA;
+                });
+
+                sortedGroups.forEach(group => {
+                    const groupDiv = document.createElement('div');
+                    groupDiv.className = 'history-group';
+                    const headerDiv = document.createElement('div');
+                    headerDiv.className = 'history-group-header';
+                    headerDiv.innerHTML = `<div>Folio: <strong>${group.folio}</strong> (${group.date})</div>`;
+                    groupDiv.appendChild(headerDiv);
+                    
+                    group.items.forEach(item => {
+                        const productDiv = document.createElement('div');
+                        productDiv.className = 'history-product-item';
+                        productDiv.innerHTML = `
+                            <button class="delete-btn" data-id="${item.id}"><i class="fas fa-trash"></i></button>
+                            <div>
+                                Producto: <strong>${getTypeName(item.productType)}</strong><br>
+                                Complemento: <strong>${getComplementName(item.complement) || 'Ninguno'}</strong><br>
+                                Topping: <strong>${getToppingName(item.topping) || 'Ninguno'}</strong><br>
+                                Crema Batida: <strong>${item.whippedCream ? 'Sí' : 'No'}</strong>
+                            </div>
+                        `;
+                        groupDiv.appendChild(productDiv);
+                    });
+                    historyList.appendChild(groupDiv);
+                });
+                downloadCsvBtn.style.display = 'block';
+            }
+        } catch (error) {
+            console.error("Error loading history:", error);
+            historyList.innerHTML = '<div class="empty-order">Hubo un error al cargar el historial.</div>';
+        }
+    }
+
+    function getTypeName(type) {
+        switch(type) {
+            case 'congeladas': return 'Fresas con Crema Congeladas';
+            case 'naturales': return 'Fresas con Crema Naturales';
+            case 'mixtas': return 'Fresas Mixtas (Congeladas + Naturales)';
+            default: return '';
+        }
+    }
+
+    function getComplementName(complement) {
+        switch(complement) {
+            case 'oreo': return 'Oreo';
+            case 'chips-ahoy': return 'Chips Ahoy';
+            case 'canelitas': return 'Canelitas';
+            case 'gansito': return 'Gansito';
+            default: return '';
+        }
+    }
+
+    function getToppingName(topping) {
+        switch(topping) {
+            case 'chocolate': return 'Chocolate líquido';
+            case 'cajeta': return 'Cajeta';
+            case 'nutella': return 'Nutella';
+            case 'caramelo': return 'Caramelo';
+            case 'nuez': return 'Nuez';
+            case 'almendra': return 'Almendra';
+            case 'jarabe-fresa': return 'Jarabe de fresa';
+            default: return '';
+        }
+    }
+</script>
